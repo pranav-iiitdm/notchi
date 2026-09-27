@@ -1533,6 +1533,71 @@ final class SessionStoreTests: XCTestCase {
         XCTAssertTrue(session.codexArchived)
     }
 
+    func testRefreshCodexThreadMetadataReturnsDeletedSessionsOnceThreadAndTranscriptAreGone() {
+        let store = SessionStore.shared
+        let transcriptPath = "/tmp/deleted-rollout.jsonl"
+        store.setCodexTranscriptExistsForTesting { _ in true }
+        store.setCodexMetadataResolverForTesting { _ in
+            CodexThreadMetadata(title: "Deleted chat", archived: false)
+        }
+
+        let session = store.process(makeEvent(
+            sessionId: "codex-deleted-\(UUID().uuidString)",
+            provider: .codex,
+            cwd: "/tmp/notchi",
+            transcriptPath: transcriptPath,
+            event: .userPromptSubmitted,
+            status: "processing",
+            userPrompt: "raw prompt"
+        ))
+        XCTAssertEqual(store.refreshCodexThreadMetadataForTesting().map(\.sessionKey), [])
+
+        store.setCodexMetadataResolverForTesting { _ in nil }
+        store.setCodexTranscriptExistsForTesting { _ in false }
+
+        XCTAssertEqual(store.refreshCodexThreadMetadataForTesting().map(\.sessionKey), [session.sessionKey])
+    }
+
+    func testRefreshCodexThreadMetadataKeepsSessionWhenThreadRowMissingButTranscriptExists() {
+        let store = SessionStore.shared
+        store.setCodexTranscriptExistsForTesting { _ in true }
+        store.setCodexMetadataResolverForTesting { _ in
+            CodexThreadMetadata(title: "Live chat", archived: false)
+        }
+
+        _ = store.process(makeEvent(
+            sessionId: "codex-row-missing-\(UUID().uuidString)",
+            provider: .codex,
+            cwd: "/tmp/notchi",
+            transcriptPath: "/tmp/row-missing-rollout.jsonl",
+            event: .userPromptSubmitted,
+            status: "processing",
+            userPrompt: "raw prompt"
+        ))
+        _ = store.refreshCodexThreadMetadataForTesting()
+
+        store.setCodexMetadataResolverForTesting { _ in nil }
+
+        XCTAssertEqual(store.refreshCodexThreadMetadataForTesting().map(\.sessionKey), [])
+    }
+
+    func testRefreshCodexThreadMetadataKeepsUnresolvedNewSessionWithoutTranscript() {
+        let store = SessionStore.shared
+        store.setCodexTranscriptExistsForTesting { _ in false }
+        store.setCodexMetadataResolverForTesting { _ in nil }
+
+        _ = store.process(makeEvent(
+            sessionId: "codex-new-\(UUID().uuidString)",
+            provider: .codex,
+            cwd: "/tmp/notchi",
+            transcriptPath: "/tmp/new-rollout.jsonl",
+            event: .sessionStarted,
+            status: "waiting_for_input"
+        ))
+
+        XCTAssertEqual(store.refreshCodexThreadMetadataForTesting().map(\.sessionKey), [])
+    }
+
     func testCodexThreadMetadataResolverMatchesLiteralRolloutPathFromSQLiteOutput() {
         let separator = "\u{1F}"
         let transcriptPath = "/tmp/notchi'; DROP TABLE threads; --/rollout.jsonl"

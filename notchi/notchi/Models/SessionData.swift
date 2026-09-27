@@ -59,6 +59,7 @@ final class SessionData: Identifiable {
     private(set) var codexTitle: String?
     private(set) var codexTranscriptPath: String?
     private(set) var codexArchived: Bool = false
+    private(set) var hasResolvedCodexThread: Bool = false
     private(set) var codexCompactionSignal: CodexCompactionSignal?
 
     private var sleepTimer: Task<Void, Never>?
@@ -344,9 +345,13 @@ final class SessionData: Identifiable {
         let trimmedPath = transcriptPath.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedPath.isEmpty else { return }
 
+        if codexTranscriptPath != trimmedPath {
+            hasResolvedCodexThread = false
+        }
         codexTranscriptPath = trimmedPath
 
         guard let metadata else { return }
+        hasResolvedCodexThread = true
         updateCodexTitle(metadata.title)
         codexArchived = metadata.archived
     }

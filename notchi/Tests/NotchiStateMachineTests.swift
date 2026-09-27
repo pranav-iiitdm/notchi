@@ -418,6 +418,34 @@ final class NotchiStateMachineTests: XCTestCase {
         XCTAssertEqual(SessionStore.shared.activeSessionCount, 0)
     }
 
+    func testDeletedCodexThreadRemovesSessionOnMetadataReconcile() {
+        let stateMachine = NotchiStateMachine.shared
+        stateMachine.setCodexThreadMetadataAutoRefreshEnabledForTesting(false)
+        let sessionId = "codex-deleted-\(UUID().uuidString)"
+        let sessionKey = ProviderSessionKey(provider: .codex, rawSessionId: sessionId)
+        SessionStore.shared.setCodexTranscriptExistsForTesting { _ in true }
+        SessionStore.shared.setCodexMetadataResolverForTesting { _ in
+            CodexThreadMetadata(title: "Deleted chat", archived: false)
+        }
+
+        stateMachine.handleEvent(makeEvent(
+            sessionId: sessionId,
+            provider: .codex,
+            transcriptPath: "/tmp/deleted-rollout.jsonl",
+            event: .userPromptSubmitted,
+            status: "processing",
+            userPrompt: "hello"
+        ))
+        stateMachine.reconcileCodexThreadMetadataForTesting()
+        XCTAssertNotNil(SessionStore.shared.session(for: sessionKey))
+
+        SessionStore.shared.setCodexMetadataResolverForTesting { _ in nil }
+        SessionStore.shared.setCodexTranscriptExistsForTesting { _ in false }
+        stateMachine.reconcileCodexThreadMetadataForTesting()
+
+        XCTAssertNil(SessionStore.shared.session(for: sessionKey))
+    }
+
     func testCodexThreadMetadataReconcileRefreshesTitleAndRemovesArchivedSession() {
         let stateMachine = NotchiStateMachine.shared
         stateMachine.setCodexThreadMetadataAutoRefreshEnabledForTesting(false)
