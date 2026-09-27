@@ -349,11 +349,9 @@ final class SessionData: Identifiable {
     }
 
     func updateClaudeSessionName(_ name: String?) {
-        guard provider == .claude,
-              let name = name?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !name.isEmpty else { return }
-
-        claudeSessionName = name.truncatedForPrompt()
+        guard provider == .claude else { return }
+        let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        claudeSessionName = trimmed.isEmpty ? nil : trimmed.truncatedForPrompt()
     }
 
     func updateCodexTitle(_ title: String?) {
