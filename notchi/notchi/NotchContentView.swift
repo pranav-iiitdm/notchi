@@ -453,13 +453,12 @@ struct NotchContentView: View {
         codexWeeklyUsage: QuotaPeriod?
     ) -> Int? {
         guard isUsageEnabled else { return nil }
-        guard let percentage = collapsedRingUsage(
+        return collapsedRingUsage(
             provider: provider,
             claudeUsage: claudeUsage,
             codexSessionUsage: codexSessionUsage,
             codexWeeklyUsage: codexWeeklyUsage
-        )?.usagePercentage, percentage > 0 else { return nil }
-        return percentage
+        )?.usagePercentage
     }
 
     enum CollapsedRingContent: Equatable {
