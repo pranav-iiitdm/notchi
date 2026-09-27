@@ -20,6 +20,9 @@ final class SessionStore {
     private var resolveCodexCompactionSignals: @Sendable ([String]) -> [String: CodexCompactionSignal] = { threadIds in
         CodexCompactionSignalResolver.latestSignals(threadIds: threadIds)
     }
+    private var codexTranscriptExists: @Sendable (String) -> Bool = { transcriptPath in
+        FileManager.default.fileExists(atPath: transcriptPath)
+    }
     private var resolveCodexPermissionMode: @Sendable (String) -> String? = { transcriptPath in
         CodexPermissionModeReader.shared.mode(forTranscriptAt: transcriptPath)
     }
@@ -433,21 +436,29 @@ final class SessionStore {
 
     func resolveCodexThreadMetadata(_ requests: [CodexThreadMetadataRequest]) async -> [CodexThreadMetadataUpdate] {
         let resolver = resolveCodexMetadata
+        let transcriptExists = codexTranscriptExists
         return await Task.detached(priority: .utility) {
-            Self.makeCodexThreadMetadataUpdates(requests: requests, resolver: resolver)
+            Self.makeCodexThreadMetadataUpdates(
+                requests: requests,
+                resolver: resolver,
+                transcriptExists: transcriptExists
+            )
         }.value
     }
 
     private nonisolated static func makeCodexThreadMetadataUpdates(
         requests: [CodexThreadMetadataRequest],
-        resolver: @Sendable ([String]) -> [String: CodexThreadMetadata]
+        resolver: @Sendable ([String]) -> [String: CodexThreadMetadata],
+        transcriptExists: @Sendable (String) -> Bool
     ) -> [CodexThreadMetadataUpdate] {
         let metadataByPath = resolver(requests.map(\.transcriptPath))
         return requests.map { request in
-            CodexThreadMetadataUpdate(
+            let metadata = metadataByPath[request.transcriptPath]
+            return CodexThreadMetadataUpdate(
                 sessionKey: request.sessionKey,
                 transcriptPath: request.transcriptPath,
-                metadata: metadataByPath[request.transcriptPath]
+                metadata: metadata,
+                transcriptExists: metadata != nil || transcriptExists(request.transcriptPath)
             )
         }
     }
@@ -466,7 +477,7 @@ final class SessionStore {
     }
 
     func applyCodexThreadMetadata(_ updates: [CodexThreadMetadataUpdate]) -> [SessionData] {
-        var archivedSessions: [SessionData] = []
+        var closedSessions: [SessionData] = []
 
         for update in updates {
             guard let session = sessions[update.sessionKey],
@@ -474,17 +485,25 @@ final class SessionStore {
                 continue
             }
 
+            // WHY: Deleting a chat in the Codex app removes its thread row and
+            // rollout file without firing a hook. Require both to be gone, and the
+            // row to have been seen before, so a failed sqlite read or a thread
+            // that hasn't been written yet doesn't drop a live session.
+            let isDeleted = update.metadata == nil
+                && session.hasResolvedCodexThread
+                && !update.transcriptExists
+
             session.updateCodexThreadMetadata(
                 transcriptPath: update.transcriptPath,
                 metadata: update.metadata
             )
 
-            if session.codexArchived {
-                archivedSessions.append(session)
+            if session.codexArchived || isDeleted {
+                closedSessions.append(session)
             }
         }
 
-        return archivedSessions
+        return closedSessions
     }
 
     func applyCodexCompactionSignals(_ updates: [CodexCompactionSignalUpdate]) {
@@ -646,7 +665,8 @@ final class SessionStore {
     func refreshCodexThreadMetadataForTesting() -> [SessionData] {
         let updates = Self.makeCodexThreadMetadataUpdates(
             requests: codexThreadMetadataRequests(),
-            resolver: resolveCodexMetadata
+            resolver: resolveCodexMetadata,
+            transcriptExists: codexTranscriptExists
         )
         return applyCodexThreadMetadata(updates)
     }
@@ -677,6 +697,10 @@ final class SessionStore {
         _ resolver: @escaping @Sendable ([String]) -> [String: CodexThreadMetadata]
     ) {
         resolveCodexMetadata = resolver
+    }
+
+    func setCodexTranscriptExistsForTesting(_ transcriptExists: @escaping @Sendable (String) -> Bool) {
+        codexTranscriptExists = transcriptExists
     }
 
     func setCodexCompactionSignalResolverForTesting(_ resolver: @escaping @Sendable ([String]) -> [String: CodexCompactionSignal]) {
@@ -729,6 +753,9 @@ final class SessionStore {
         }
         resolveCodexCompactionSignals = { threadIds in
             CodexCompactionSignalResolver.latestSignals(threadIds: threadIds)
+        }
+        codexTranscriptExists = { transcriptPath in
+            FileManager.default.fileExists(atPath: transcriptPath)
         }
     }
 #endif
@@ -873,6 +900,7 @@ nonisolated struct CodexThreadMetadataUpdate: Sendable, Equatable {
     let sessionKey: ProviderSessionKey
     let transcriptPath: String
     let metadata: CodexThreadMetadata?
+    let transcriptExists: Bool
 }
 
 nonisolated struct CodexCompactionSignal: Sendable, Equatable {

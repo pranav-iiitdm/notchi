@@ -92,7 +92,7 @@ final class NotchiStateMachine {
         scheduleInitialCodexThreadMetadataRefreshIfNeeded(for: event)
 
         if event.event != .sessionEnded, session.codexArchived {
-            endCodexArchivedSessions([session])
+            endClosedCodexSessions([session])
             return
         }
 
@@ -342,9 +342,9 @@ final class NotchiStateMachine {
         scheduleCodexThreadMetadataRefresh()
     }
 
-    private func endCodexArchivedSessions(_ sessions: [SessionData]) {
+    private func endClosedCodexSessions(_ sessions: [SessionData]) {
         for session in sessions {
-            // WHY: Route archive removal through the normal SessionEnd path so
+            // WHY: Route archive/delete removal through the normal SessionEnd path so
             // watcher/parser/sound cleanup stays identical to a real end event.
             handleEvent(
                 HookEvent(
@@ -489,9 +489,9 @@ final class NotchiStateMachine {
             _ = await usageRefresh
             guard !Task.isCancelled else { return }
 
-            let archivedSessions = self.sessionStore.applyCodexThreadMetadata(updates)
+            let closedSessions = self.sessionStore.applyCodexThreadMetadata(updates)
             self.sessionStore.applyCodexCompactionSignals(signals)
-            self.endCodexArchivedSessions(archivedSessions)
+            self.endClosedCodexSessions(closedSessions)
             self.refreshCodexThreadMetadataMonitoring()
         }
     }
@@ -595,9 +595,9 @@ final class NotchiStateMachine {
     }
 
     func reconcileCodexThreadMetadataForTesting() {
-        let archivedSessions = sessionStore.refreshCodexThreadMetadataForTesting()
+        let closedSessions = sessionStore.refreshCodexThreadMetadataForTesting()
         sessionStore.refreshCodexCompactionSignalsForTesting()
-        endCodexArchivedSessions(archivedSessions)
+        endClosedCodexSessions(closedSessions)
         refreshCodexThreadMetadataMonitoring()
     }
 
