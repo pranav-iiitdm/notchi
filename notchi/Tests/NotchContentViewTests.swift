@@ -139,12 +139,25 @@ final class NotchContentViewTests: XCTestCase {
         )
     }
 
-    func testCollapsedRingPercentageHidesZeroUsage() {
-        XCTAssertNil(
+    func testCollapsedRingPercentageShowsZeroUsage() {
+        XCTAssertEqual(
             NotchContentView.collapsedRingPercentage(
                 isUsageEnabled: true,
                 provider: .claude,
                 claudeUsage: QuotaPeriod(utilization: 0, resetsAt: nil),
+                codexSessionUsage: nil,
+                codexWeeklyUsage: nil
+            ),
+            0
+        )
+    }
+
+    func testCollapsedRingPercentageHidesMissingUsage() {
+        XCTAssertNil(
+            NotchContentView.collapsedRingPercentage(
+                isUsageEnabled: true,
+                provider: .claude,
+                claudeUsage: nil,
                 codexSessionUsage: nil,
                 codexWeeklyUsage: nil
             )
@@ -188,6 +201,20 @@ final class NotchContentViewTests: XCTestCase {
                 codexHasUnlimitedCredits: true
             ),
             .percentage(37)
+        )
+    }
+
+    func testCollapsedRingContentShowsZeroClaudeUsage() {
+        XCTAssertEqual(
+            NotchContentView.collapsedRingContent(
+                isUsageEnabled: true,
+                provider: .claude,
+                claudeUsage: QuotaPeriod(utilization: 0, resetsAt: nil),
+                codexSessionUsage: nil,
+                codexWeeklyUsage: nil,
+                codexHasUnlimitedCredits: false
+            ),
+            .percentage(0)
         )
     }
 
