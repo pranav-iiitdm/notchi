@@ -32,7 +32,9 @@ final class SessionStore {
     private var resolveHostBundleIdentifier: @MainActor (pid_t) -> String? = { processId in
         TerminalJumpService.shared.hostBundleIdentifier(hosting: processId)
     }
-    private var resolveClaudeSessionName: @Sendable (Int, String) -> String? = SessionStore.claudeSessionName(forProcessId:sessionId:)
+    private var resolveClaudeSessionName: @Sendable (Int, String) -> String? = { processId, sessionId in
+        ClaudeSessionNameReader.name(forProcessId: processId, sessionId: sessionId)
+    }
     private var invalidateGitPullRequestCache: @Sendable (String) -> Void = { cwd in
         GitPullRequestResolver.shared.invalidate(repositoryAt: cwd)
     }
@@ -177,11 +179,11 @@ final class SessionStore {
 
         let previousHostProcessId = session.hostProcessId
         session.updateClaudeRuntime(processId: event.claudeProcessId)
-        if event.provider == .claude, event.claudeProcessId != nil, let processId = session.claudeProcessId {
-            refreshClaudeSessionName(for: session, sessionKey: event.sessionKey, processId: processId)
-        }
         session.updateCodexRuntime(processId: event.codexProcessId, origin: event.codexOrigin)
         session.updateDevinRuntime(processId: event.devinProcessId)
+        if event.claudeProcessId != nil, let processId = session.claudeProcessId {
+            refreshClaudeSessionName(for: session, sessionKey: event.sessionKey, processId: processId)
+        }
         if let hostProcessId = session.hostProcessId,
            hostProcessId != previousHostProcessId,
            let processId = pid_t(exactly: hostProcessId) {
@@ -287,34 +289,6 @@ final class SessionStore {
         return isShared ? "\(name) #\(number)" : name
     }
 
-    nonisolated static func claudeSessionName(forProcessId processId: Int, sessionId: String) -> String? {
-        claudeSessionName(
-            forProcessId: processId,
-            sessionId: sessionId,
-            in: ClaudeConfigDirectoryResolver.resolve().directoryURL
-        )
-    }
-
-    // Claude Code keeps a per-process registry file whose `name` follows `claude -n` and `/rename`.
-    // Unnamed sessions get an auto-generated name marked `nameSource: "derived"`, and a pid can be
-    // reused (or `/clear` can start a new session), hence the nameSource and sessionId checks.
-    nonisolated static func claudeSessionName(
-        forProcessId processId: Int,
-        sessionId: String,
-        in configDirectory: URL
-    ) -> String? {
-        let url = configDirectory
-            .appendingPathComponent("sessions")
-            .appendingPathComponent("\(processId).json")
-        guard let data = try? Data(contentsOf: url),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              json["sessionId"] as? String == sessionId,
-              json["nameSource"] as? String != "derived" else {
-            return nil
-        }
-        return json["name"] as? String
-    }
-
     func displayTitle(for session: SessionData) -> String {
         let label = displaySessionLabel(for: session)
         if let detail = session.codexTitle ?? session.lastUserPrompt {
@@ -415,8 +389,11 @@ final class SessionStore {
             await MainActor.run {
                 guard self.sessions[sessionKey] === session,
                       self.claudeSessionNameGenerations[sessionKey] == generation else { return }
+                let previousName = session.claudeSessionName
                 session.updateClaudeSessionName(name)
-                self.recomputeDisplaySessionNumbers()
+                if session.claudeSessionName != previousName {
+                    self.recomputeDisplaySessionNumbers()
+                }
             }
         }
     }
@@ -775,16 +752,12 @@ final class SessionStore {
         invalidateGitPullRequestCache = invalidator
     }
 
-    func setHostBundleIdentifierResolverForTesting(_ resolver: @escaping @MainActor (pid_t) -> String?) {
-        resolveHostBundleIdentifier = resolver
-    }
-
     func setClaudeSessionNameResolverForTesting(_ resolver: @escaping @Sendable (Int, String) -> String?) {
         resolveClaudeSessionName = resolver
     }
 
-    func resetClaudeSessionNameResolverForTesting() {
-        resolveClaudeSessionName = SessionStore.claudeSessionName(forProcessId:sessionId:)
+    func setHostBundleIdentifierResolverForTesting(_ resolver: @escaping @MainActor (pid_t) -> String?) {
+        resolveHostBundleIdentifier = resolver
     }
 
     func resetHostBundleIdentifierResolverForTesting() {
@@ -820,6 +793,9 @@ final class SessionStore {
         }
         codexTranscriptExists = { transcriptPath in
             FileManager.default.fileExists(atPath: transcriptPath)
+        }
+        resolveClaudeSessionName = { processId, sessionId in
+            ClaudeSessionNameReader.name(forProcessId: processId, sessionId: sessionId)
         }
     }
 #endif

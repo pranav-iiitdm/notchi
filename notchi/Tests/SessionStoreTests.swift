@@ -516,12 +516,11 @@ final class SessionStoreTests: XCTestCase {
         XCTAssertEqual(resolvedProcessIds, [42])
     }
 
-    func testClaudeSessionNameReplacesProjectLabel() async throws {
+    func testClaudeSessionNameReplacesProjectLabel() async {
         let store = SessionStore.shared
         store.setClaudeSessionNameResolverForTesting { processId, _ in
             processId == 4242 ? "tally-domain-audit" : nil
         }
-        defer { store.resetClaudeSessionNameResolverForTesting() }
 
         let session = store.process(makeEvent(
             sessionId: "claude-name-\(UUID().uuidString)",
@@ -530,46 +529,54 @@ final class SessionStoreTests: XCTestCase {
             userPrompt: "check the audit",
             claudeProcessId: 4242
         ))
-        defer { store.dismissSession(session.sessionKey) }
 
-        try await Task.sleep(for: .milliseconds(300))
+        let named = await waitUntil(timeout: 1) { session.claudeSessionName != nil }
+        XCTAssertTrue(named)
         XCTAssertEqual(store.displaySessionLabel(for: session), "tally-domain-audit")
         XCTAssertEqual(store.displayTitle(for: session), "tally-domain-audit - check the audit")
     }
 
-    func testClaudeSessionLabelFallsBackWhenUnnamed() async throws {
+    func testNamingASessionRenumbersTheRestOfItsProject() async {
         let store = SessionStore.shared
-        store.setClaudeSessionNameResolverForTesting { _, _ in nil }
-        defer { store.resetClaudeSessionNameResolverForTesting() }
+        store.setClaudeSessionNameResolverForTesting { processId, _ in
+            processId == 4243 ? "review" : nil
+        }
 
-        let session = store.process(makeEvent(
-            sessionId: "claude-unnamed-\(UUID().uuidString)",
+        let named = store.process(makeEvent(
+            sessionId: "claude-renumber-1-\(UUID().uuidString)",
+            cwd: "/tmp/notchi",
             event: .sessionStarted,
             status: "waiting_for_input",
             claudeProcessId: 4243
         ))
-        defer { store.dismissSession(session.sessionKey) }
+        let unnamed = store.process(makeEvent(
+            sessionId: "claude-renumber-2-\(UUID().uuidString)",
+            cwd: "/tmp/notchi",
+            event: .sessionStarted,
+            status: "waiting_for_input",
+            claudeProcessId: 4244
+        ))
+        XCTAssertEqual(store.displaySessionLabel(for: unnamed), "notchi #2")
 
-        try await Task.sleep(for: .milliseconds(300))
-        XCTAssertNil(session.claudeSessionName)
-        XCTAssertEqual(store.displaySessionLabel(for: session), "tmp #\(store.displaySessionNumber(for: session))")
+        let didName = await waitUntil(timeout: 1) { named.claudeSessionName != nil }
+        XCTAssertTrue(didName)
+        XCTAssertEqual(store.displaySessionLabel(for: named), "review")
+        XCTAssertEqual(store.displaySessionLabel(for: unnamed), "notchi #1")
     }
 
-    func testClaudeSessionNameClearsWhenLookupStopsReturningIt() async throws {
+    func testClaudeSessionNameClearsWhenLookupStopsReturningIt() async {
         let store = SessionStore.shared
         store.setClaudeSessionNameResolverForTesting { _, _ in "review" }
-        defer { store.resetClaudeSessionNameResolverForTesting() }
         let sessionId = "claude-clear-\(UUID().uuidString)"
 
         let session = store.process(makeEvent(
             sessionId: sessionId,
             event: .sessionStarted,
             status: "waiting_for_input",
-            claudeProcessId: 4244
+            claudeProcessId: 4245
         ))
-        defer { store.dismissSession(session.sessionKey) }
-        try await Task.sleep(for: .milliseconds(300))
-        XCTAssertEqual(session.claudeSessionName, "review")
+        let named = await waitUntil(timeout: 1) { session.claudeSessionName == "review" }
+        XCTAssertTrue(named)
 
         store.setClaudeSessionNameResolverForTesting { _, _ in nil }
         _ = store.process(makeEvent(
@@ -577,62 +584,64 @@ final class SessionStoreTests: XCTestCase {
             event: .userPromptSubmitted,
             status: "processing",
             userPrompt: "next",
-            claudeProcessId: 4244
+            claudeProcessId: 4245
         ))
-        try await Task.sleep(for: .milliseconds(300))
-        XCTAssertNil(session.claudeSessionName)
+        let cleared = await waitUntil(timeout: 1) { session.claudeSessionName == nil }
+        XCTAssertTrue(cleared)
     }
 
-    func testDuplicateClaudeSessionNamesKeepNumbers() async throws {
+    func testDuplicateClaudeSessionNamesKeepNumbers() async {
         let store = SessionStore.shared
         store.setClaudeSessionNameResolverForTesting { _, _ in "review" }
-        defer { store.resetClaudeSessionNameResolverForTesting() }
 
         let first = store.process(makeEvent(
             sessionId: "claude-dup-1-\(UUID().uuidString)",
             event: .sessionStarted,
             status: "waiting_for_input",
-            claudeProcessId: 4245
+            claudeProcessId: 4246
         ))
-        defer { store.dismissSession(first.sessionKey) }
         let second = store.process(makeEvent(
             sessionId: "claude-dup-2-\(UUID().uuidString)",
             event: .sessionStarted,
             status: "waiting_for_input",
-            claudeProcessId: 4246
+            claudeProcessId: 4247
         ))
-        defer { store.dismissSession(second.sessionKey) }
 
-        try await Task.sleep(for: .milliseconds(300))
-        XCTAssertEqual(
-            Set([store.displaySessionLabel(for: first), store.displaySessionLabel(for: second)]),
-            ["review #1", "review #2"]
-        )
+        let bothNamed = await waitUntil(timeout: 1) {
+            first.claudeSessionName != nil && second.claudeSessionName != nil
+        }
+        XCTAssertTrue(bothNamed)
+        XCTAssertEqual(store.displaySessionLabel(for: first), "review #1")
+        XCTAssertEqual(store.displaySessionLabel(for: second), "review #2")
     }
 
-    func testClaudeSessionNameParsesRegistryFile() throws {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let sessionsDirectory = directory.appendingPathComponent("sessions")
-        try FileManager.default.createDirectory(at: sessionsDirectory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-
-        func write(_ processId: Int, _ json: String) throws {
-            try json.write(
-                to: sessionsDirectory.appendingPathComponent("\(processId).json"),
-                atomically: true,
-                encoding: .utf8
-            )
+    func testStaleClaudeSessionNameLookupDoesNotOverwriteNewerResult() async throws {
+        let store = SessionStore.shared
+        store.setClaudeSessionNameResolverForTesting { processId, _ in
+            if processId == 4248 {
+                Thread.sleep(forTimeInterval: 0.3)
+                return "old-name"
+            }
+            return "new-name"
         }
-        try write(101, #"{"sessionId":"s-1","name":"tally-domain-audit","nameSource":"user"}"#)
-        try write(102, #"{"sessionId":"s-2","name":"notchi-66","nameSource":"derived"}"#)
+        let sessionId = "claude-stale-\(UUID().uuidString)"
 
-        XCTAssertEqual(
-            SessionStore.claudeSessionName(forProcessId: 101, sessionId: "s-1", in: directory),
-            "tally-domain-audit"
-        )
-        XCTAssertNil(SessionStore.claudeSessionName(forProcessId: 102, sessionId: "s-2", in: directory))
-        XCTAssertNil(SessionStore.claudeSessionName(forProcessId: 101, sessionId: "other", in: directory))
-        XCTAssertNil(SessionStore.claudeSessionName(forProcessId: 103, sessionId: "s-3", in: directory))
+        let session = store.process(makeEvent(
+            sessionId: sessionId,
+            event: .sessionStarted,
+            status: "waiting_for_input",
+            claudeProcessId: 4248
+        ))
+        _ = store.process(makeEvent(
+            sessionId: sessionId,
+            event: .userPromptSubmitted,
+            status: "processing",
+            userPrompt: "next",
+            claudeProcessId: 4249
+        ))
+
+        try await Task.sleep(for: .milliseconds(600))
+        XCTAssertEqual(session.claudeSessionName, "new-name")
     }
 
     func testProcessRejectsProcessIdsThatDoNotFitInPid() {
